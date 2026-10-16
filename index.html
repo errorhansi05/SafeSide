@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SafeSide</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+/* ===== YOUR BRANDING: change these values ===== */
+:root{--brand:#0f7a62;--ink:#12292b;--mute:#5f7476;--bg:#f6f8f7;--panel:#fff;--line:#dbe4e2;
+--c1:#0f8b6d;--c2:#6b7b8c;--c3:#d99a00;--font:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:var(--font);color:var(--ink)}
+#map{position:absolute;inset:0}
+.panel{position:absolute;z-index:1000;background:var(--panel);left:0;right:0;bottom:0;max-height:60%;overflow:auto;padding:14px 16px;border-radius:18px 18px 0 0;box-shadow:0 -6px 24px rgba(0,0,0,.18)}
+@media(min-width:820px){.panel{top:0;width:400px;right:auto;max-height:none;border-radius:0;padding:20px}}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.brand img{height:30px}.brand b{font-size:22px}.brand small{color:var(--mute);margin-left:auto;font-size:12px}
+.fw{position:relative}.fw+.fw{margin-top:8px}
+input{width:100%;height:44px;border:1px solid var(--line);border-radius:12px;padding:0 12px;font:inherit;background:var(--bg)}
+.sug{position:absolute;left:0;right:0;top:46px;background:var(--panel);border:1px solid var(--line);border-radius:12px;z-index:5;box-shadow:0 8px 20px rgba(0,0,0,.15)}
+.sug button{display:block;width:100%;text-align:left;border:0;background:none;padding:10px 12px;font:inherit;font-size:13px;cursor:pointer}
+.sug button:hover{background:var(--bg)}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0}
+.chip{border:1px solid var(--line);background:none;border-radius:999px;padding:7px 12px;cursor:pointer;font:inherit;font-size:14px}
+.chip[aria-pressed=true]{background:var(--ink);color:#fff;border-color:var(--ink)}
+.go{width:100%;height:46px;border:0;border-radius:12px;background:var(--brand);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+.go:disabled{opacity:.6}
+.msg{font-size:13px;color:var(--mute);margin:10px 0;line-height:1.45}.err{color:#b3261e}
+.rt{width:100%;text-align:left;border:1.5px solid var(--line);background:none;border-radius:14px;padding:12px;margin-top:10px;cursor:pointer;font:inherit}
+.rt[aria-pressed=true]{border-color:var(--c);background:var(--bg)}
+.top{display:flex;align-items:center;gap:10px}.sw{width:10px;height:34px;border-radius:5px;background:var(--c)}
+.sc{margin-left:auto;font-size:26px;font-weight:800}.sub{color:var(--mute);font-size:14px}
+.f{display:grid;grid-template-columns:110px 1fr 32px;gap:8px;align-items:center;font-size:13px;margin:5px 0}
+.bar{height:6px;border-radius:3px;background:var(--line)}.bar i{display:block;height:100%;background:var(--c);border-radius:3px}
+.why{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<section class="panel">
+  <div class="brand">
+    <!-- YOUR LOGO: put logo.png in /static and uncomment -->
+    <!-- <img src="/static/logo.png" alt=""> -->
+    <b id="name">SafeSide</b><small id="tag">To be on the safer side of your journey</small>
+  </div>
+  <div class="fw"><input id="from" placeholder="From: type a place" autocomplete="off"><div id="sf"></div></div>
+  <div class="fw"><input id="to" placeholder="To: type a place" autocomplete="off"><div id="st"></div></div>
+  <div class="row"><button class="chip" id="loc">Use my location</button></div>
+  <div class="row" id="modes"></div>
+  <div class="row"><button class="chip" data-n="0" aria-pressed="true">Daytime</button><button class="chip" data-n="1" aria-pressed="false">Night</button></div>
+  <button class="go" id="go">Analyze routes</button>
+  <div class="msg" id="msg">Search a place and press Enter, then choose from the list.</div>
+  <div id="res"></div>
+</section>
+<script>
+const MODES=[["walk","Walking"],["bike","Bicycle"],["two","Two-wheeler"],["car","Car"]];
+const COL=["var(--c1)","var(--c2)","var(--c3)"],HEX=["#0f8b6d","#6b7b8c","#d99a00"];
+const FN={light:"Lighting",road:"Road type",act:"Activity nearby",emg:"Emergency access"};
+const GOOD={light:"Good lighting coverage",road:"Mostly major, well-built roads",act:"Passes active public areas",emg:"Close to police and hospitals"};
+const BAD={light:"Limited lighting along parts of the route",road:"Includes smaller roads or paths",act:"Quiet stretches with few shops nearby",emg:"Far from police and hospitals"};
+const S={mode:"walk",night:0,pts:{from:null,to:null},routes:[],sel:0};
+const $=s=>document.querySelector(s);
+const map=L.map("map",{zoomControl:false}).setView([22.5,79],5);
+L.control.zoom({position:"topright"}).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap contributors"}).addTo(map);
+let layer=L.layerGroup().addTo(map);
+
+function modes(){$("#modes").innerHTML=MODES.map(m=>`<button class="chip" data-m="${m[0]}" aria-pressed="${S.mode===m[0]}">${m[1]}</button>`).join("")}
+function setMsg(t,e){$("#msg").textContent=t;$("#msg").className="msg"+(e?" err":"")}
+
+function search(which){
+  const q=$("#"+which).value.trim();if(q.length<3)return;
+  setMsg("Searching…");
+  fetch("/api/geocode?q="+encodeURIComponent(q)).then(async r=>{
+    const d=await r.json();if(!r.ok)throw new Error(d.detail||"Search failed");return d;
+  }).then(list=>{
+    const box=$(which==="from"?"#sf":"#st");
+    box.innerHTML=list.length?`<div class="sug">${list.map((p,i)=>`<button data-w="${which}" data-i="${i}">${p.name}</button>`).join("")}</div>`:"";
+    box._list=list;
+    setMsg(list.length?"Pick a place from the list.":"No place found. Try adding the city name, like 'Agra Fort, Agra'.",!list.length);
+  }).catch(e=>setMsg(e.message,1));
+}
+let tm;["from","to"].forEach(w=>$("#"+w).addEventListener("input",()=>{S.pts[w]=null;clearTimeout(tm);tm=setTimeout(()=>search(w),700)}));
+["from","to"].forEach(w=>$("#"+w).addEventListener("keydown",e=>{if(e.key==="Enter")search(w)}));
+
+$("#loc").onclick=()=>navigator.geolocation.getCurrentPosition(p=>{
+  S.pts.from={lat:p.coords.latitude,lon:p.coords.longitude};$("#from").value="Current location";map.setView([p.coords.latitude,p.coords.longitude],14);
+},()=>setMsg("Location access was blocked. Type a starting place instead.",1));
+
+document.addEventListener("click",e=>{
+  const b=e.target.closest("button");if(!b)return;
+  if(b.dataset.w){const box=$(b.dataset.w==="from"?"#sf":"#st"),p=box._list[b.dataset.i];
+    S.pts[b.dataset.w]=p;map.flyTo([p.lat,p.lon],15);$("#"+b.dataset.w).value=p.name;box.innerHTML="";}
+  else if(b.dataset.m){S.mode=b.dataset.m;modes()}
+  else if(b.dataset.n!==undefined){S.night=+b.dataset.n;document.querySelectorAll("[data-n]").forEach(x=>x.setAttribute("aria-pressed",x.dataset.n==S.night))}
+  else if(b.dataset.r!==undefined){S.sel=+b.dataset.r;draw()}
+});
+
+$("#go").onclick=async()=>{
+  const {from,to}=S.pts;if(!from||!to)return setMsg("Choose both places from the search lists first.",1);
+  $("#go").disabled=true;setMsg("Fetching routes and map data. This can take 10 to 30 seconds.");
+  try{
+    const u=`/api/analyze?from_lat=${from.lat}&from_lon=${from.lon}&to_lat=${to.lat}&to_lon=${to.lon}&mode=${S.mode}&night=${!!S.night}`;
+    const r=await fetch(u),d=await r.json();
+    if(!r.ok)throw new Error(d.detail);
+    S.routes=d.routes;S.sel=0;S.note=d.not_included;setMsg("");draw();
+  }catch(e){setMsg(e.message||"Something went wrong.",1)}
+  $("#go").disabled=false;
+};
+
+function draw(){
+  layer.clearLayers();
+  S.routes.forEach((r,i)=>{if(i===S.sel)return;L.polyline(r.coords,{color:HEX[i],weight:5,opacity:.5}).addTo(layer).on("click",()=>{S.sel=i;draw()})});
+  const s=S.routes[S.sel];if(s){L.polyline(s.coords,{color:"#fff",weight:11}).addTo(layer);L.polyline(s.coords,{color:HEX[S.sel],weight:7}).addTo(layer);map.fitBounds(L.polyline(s.coords).getBounds(),{padding:[60,60]})}
+  if(S.pts.from)L.circleMarker([S.pts.from.lat,S.pts.from.lon],{radius:8,color:"#0f7a62",fillColor:"#fff",fillOpacity:1}).addTo(layer);
+  if(S.pts.to)L.marker([S.pts.to.lat,S.pts.to.lon]).addTo(layer);
+  $("#res").innerHTML=S.routes.map((r,i)=>{
+    const on=i===S.sel,ks=Object.keys(FN).filter(k=>r.factors[k]!==null).sort((a,b)=>r.factors[b]-r.factors[a]);
+    let h=`<button class="rt" style="--c:${COL[i]}" data-r="${i}" aria-pressed="${on}"><div class="top"><i class="sw"></i><div><b>${r.label}</b><div class="sub">${r.km} km, ${r.min} min</div></div><div class="sc">${r.score??"–"}</div></div>`;
+    if(on)h+=`<div class="why"><b>Why this score?</b>`+Object.keys(FN).map(k=>`<div class="f"><span>${FN[k]}</span><div class="bar"><i style="width:${r.factors[k]??0}%"></i></div><b>${r.factors[k]??"n/a"}</b></div>`).join("")
+      +ks.filter(k=>r.factors[k]>=70).slice(0,3).map(k=>`<div class="sub">✓ ${GOOD[k]}</div>`).join("")
+      +ks.filter(k=>r.factors[k]<50).map(k=>`<div class="sub">! ${BAD[k]}</div>`).join("")
+      +`<div class="sub" style="margin-top:8px">Data coverage: road type ${r.confidence.road}%, lighting tags ${r.confidence.light}% of the route. "n/a" means OpenStreetMap has too little data there.</div></div>`;
+    return h+"</button>"}).join("")
+    +(S.routes.length?`<p class="msg">Not included yet: ${S.note.join("; ")}. Scores come from OpenStreetMap data and can't guarantee safety. The final choice is yours.</p>`:"");
+}
+modes();
+</script>
+<script src="/static/extras.js"></script>
+</body>
+</html>
